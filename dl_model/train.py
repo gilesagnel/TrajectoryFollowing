@@ -249,7 +249,9 @@ if save_model and not os.path.exists("./pytorch_models"):
 # Create the training environment
 environment_dim = 20
 robot_dim = 4
-env = GazeboEnv("robot_scenario.launch", environment_dim)
+image_size = (224, 224)
+floor_plan_image_size = (512, 512)
+env = GazeboEnv("robot_scenario.launch", environment_dim, image_size)
 time.sleep(5)
 torch.manual_seed(seed)
 np.random.seed(seed)

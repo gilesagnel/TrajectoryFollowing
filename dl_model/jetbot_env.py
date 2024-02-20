@@ -11,11 +11,14 @@ import sensor_msgs.point_cloud2 as pc2
 from gazebo_msgs.msg import ModelState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import Image
 from squaternion import Quaternion
 from std_srvs.srv import Empty
 from visualization_msgs.msg import Marker
 from visualization_msgs.msg import MarkerArray
+import cv2
+from cv_bridge import CvBridge
+from geometry_msgs.msg import Point
 
 GOAL_REACHED_DIST = 0.3
 COLLISION_DIST = 0.35
@@ -65,35 +68,28 @@ def check_pos(x, y):
 class GazeboEnv:
     """Superclass for all Gazebo environments."""
 
-    def __init__(self, launchfile, environment_dim):
-        self.environment_dim = environment_dim
+    def __init__(self, launchfile, environment_dim, image_size):
+        self.environment_dim = environment_dim # re
+        self.image_size = image_size
         self.odom_x = 0
         self.odom_y = 0
 
-        self.goal_x = 1
-        self.goal_y = 0.0
+        self.goal_trajectory = self.load_goal_trajectory()
 
-        self.upper = 5.0
-        self.lower = -5.0
-        self.velodyne_data = np.ones(self.environment_dim) * 10
         self.last_odom = None
 
+        self.image_state = []
+        self.bridge = CvBridge()
+
         self.set_self_state = ModelState()
-        self.set_self_state.model_name = "r1"
-        self.set_self_state.pose.position.x = 0.0
+        self.set_self_state.model_name = "jetbot"
+        self.set_self_state.pose.position.x = 0.0 
         self.set_self_state.pose.position.y = 0.0
         self.set_self_state.pose.position.z = 0.0
         self.set_self_state.pose.orientation.x = 0.0
         self.set_self_state.pose.orientation.y = 0.0
         self.set_self_state.pose.orientation.z = 0.0
         self.set_self_state.pose.orientation.w = 1.0
-
-        self.gaps = [[-np.pi / 2 - 0.03, -np.pi / 2 + np.pi / self.environment_dim]]
-        for m in range(self.environment_dim - 1):
-            self.gaps.append(
-                [self.gaps[m][1], self.gaps[m][1] + np.pi / self.environment_dim]
-            )
-        self.gaps[-1][-1] += 0.03
 
         port = "11311"
         subprocess.Popen(["roscore", "-p", port])
@@ -102,52 +98,79 @@ class GazeboEnv:
 
         # Launch the simulation with the given launchfile name
         rospy.init_node("gym", anonymous=True)
-        if launchfile.startswith("/"):
-            fullpath = launchfile
-        else:
-            fullpath = os.path.join(os.path.dirname(__file__), "assets", launchfile)
+        fullpath = os.path.join(os.path.dirname(__file__), "assets", launchfile)
         if not path.exists(fullpath):
             raise IOError("File " + fullpath + " does not exist")
 
         subprocess.Popen(["roslaunch", "-p", port, fullpath])
         print("Gazebo launched!")
-
         # Set up the ROS publishers and subscribers
-        self.vel_pub = rospy.Publisher("/r1/cmd_vel", Twist, queue_size=1)
+        self.vel_pub = rospy.Publisher("/jetbot_velocity_controller/cmd_vel", Twist, queue_size=1)
         self.set_state = rospy.Publisher(
             "gazebo/set_model_state", ModelState, queue_size=10
         )
         self.unpause = rospy.ServiceProxy("/gazebo/unpause_physics", Empty)
         self.pause = rospy.ServiceProxy("/gazebo/pause_physics", Empty)
         self.reset_proxy = rospy.ServiceProxy("/gazebo/reset_world", Empty)
-        self.publisher = rospy.Publisher("goal_point", MarkerArray, queue_size=3)
+        self.publisher = rospy.Publisher("/tracjectory", MarkerArray, queue_size=3)
         self.publisher2 = rospy.Publisher("linear_velocity", MarkerArray, queue_size=1)
         self.publisher3 = rospy.Publisher("angular_velocity", MarkerArray, queue_size=1)
-        self.velodyne = rospy.Subscriber(
-            "/velodyne_points", PointCloud2, self.velodyne_callback, queue_size=1
+    
+        self.camera = rospy.Subscriber(
+            "/jetbot_camera/image_raw", Image, self.jetbot_camera_callback, queue_size=1
         )
         self.odom = rospy.Subscriber(
-            "/r1/odom", Odometry, self.odom_callback, queue_size=1
+            "/jetbot_velocity_controller/odom", Odometry, self.odom_callback, queue_size=1
         )
+        self.draw_trajectory()
 
-    # Read velodyne pointcloud and turn it into distance data, then select the minimum value for each angle
-    # range as state representation
-    def velodyne_callback(self, v):
-        data = list(pc2.read_points(v, skip_nans=False, field_names=("x", "y", "z")))
-        self.velodyne_data = np.ones(self.environment_dim) * 10
-        for i in range(len(data)):
-            if data[i][2] > -0.2:
-                dot = data[i][0] * 1 + data[i][1] * 0
-                mag1 = math.sqrt(math.pow(data[i][0], 2) + math.pow(data[i][1], 2))
-                mag2 = math.sqrt(math.pow(1, 2) + math.pow(0, 2))
-                beta = math.acos(dot / (mag1 * mag2)) * np.sign(data[i][1])
-                dist = math.sqrt(data[i][0] ** 2 + data[i][1] ** 2 + data[i][2] ** 2)
+    def draw_trajectory(self):
+        marker_array = MarkerArray()
+    
+        line_marker = Marker()
+        line_marker.header.frame_id = "odom"  
+        line_marker.type = Marker.LINE_STRIP
+        line_marker.action = Marker.ADD
+        line_marker.scale.x = 0.1  # Set the line width
 
-                for j in range(len(self.gaps)):
-                    if self.gaps[j][0] <= beta < self.gaps[j][1]:
-                        self.velodyne_data[j] = min(self.velodyne_data[j], dist)
-                        break
+        line_marker.color.r = 0.0  # Set the color (red)
+        line_marker.color.g = 1.0
+        line_marker.color.b = 0.0
+        line_marker.color.a = 1.0  # Set the alpha (transparency)
 
+        line_marker.points = []
+
+        for point in self.goal_trajectory:
+            p = Point()
+            p.x, p.y = point[0], point[1]
+            line_marker.points.append(p)
+
+        marker_array.markers.append(line_marker)
+
+        self.publisher.publish(marker_array)
+
+    def load_goal_trajectory(self):
+        file_path = os.path.join(os.path.dirname(__file__), "assets", 'trajectory.txt')
+        with open(file_path, 'r') as file:
+            file_content = file.read()
+        data = eval(file_content)
+        trajectory = [(0.0, 0.0)]
+        for d in data:
+            axis, (_, end) = d
+            x, y = trajectory[-1]
+            start = x if axis == "x" else y
+            step = 0.1 if start < end else -0.1
+            points = [(round(i, 1), y) if axis == "x" else (x, round(i, 1)) for i in np.arange(start, end, step)]
+            trajectory.extend(points)
+        return trajectory
+    
+    def jetbot_camera_callback(self, img_msg):
+        w, h = self.image_size
+        cv_image = self.bridge.imgmsg_to_cv2(img_msg, desired_encoding='passthrough')
+        resized_image = cv2.resize(cv_image, (w, h))
+        self.image_state.append(resized_image)
+
+    
     def odom_callback(self, od_data):
         self.last_odom = od_data
 
@@ -179,7 +202,7 @@ class GazeboEnv:
             print("/gazebo/pause_physics service call failed")
 
         # read velodyne laser state
-        done, collision, min_laser = self.observe_collision(self.velodyne_data)
+        done, collision = self.observe_collision()
         v_state = []
         v_state[:] = self.velodyne_data[:]
         laser_state = [v_state]
@@ -229,7 +252,7 @@ class GazeboEnv:
 
         robot_state = [distance, theta, action[0], action[1]]
         state = np.append(laser_state, robot_state)
-        reward = self.get_reward(target, collision, action, min_laser)
+        reward = self.get_reward(target, state)
         return state, reward, done, target
 
     def reset(self):
@@ -424,19 +447,13 @@ class GazeboEnv:
         self.publisher3.publish(markerArray3)
 
     @staticmethod
-    def observe_collision(laser_data):
-        # Detect a collision from laser data
-        min_laser = min(laser_data)
-        if min_laser < COLLISION_DIST:
-            return True, True, min_laser
-        return False, False, min_laser
+    def observe_collision():
+        # TODO Detect collison from image or other
+        return False, False
 
     @staticmethod
-    def get_reward(target, collision, action, min_laser):
+    def get_reward(target):
         if target:
-            return 100.0
-        elif collision:
-            return -100.0
+            return 1.0
         else:
-            r3 = lambda x: 1 - x if x < 1 else 0.0
-            return action[0] / 2 - abs(action[1]) / 2 - r3(min_laser) / 2
+            return 0.0

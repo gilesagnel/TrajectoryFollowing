@@ -1,6 +1,6 @@
 <launch>
 
-  <arg name="robot_name" default="jetbot" />
+  <arg name="robot_name" default="jb1" />
   <arg name="robot_position" default="-x -1.0 -y 5.0 -z 0.01" />
 
 
