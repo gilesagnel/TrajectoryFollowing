@@ -14,7 +14,7 @@
                 "ROS_HOSTNAME":"localhost",
                 "ROS_MASTER_URI":"http://localhost:11311",
                 "ROS_PORT_SIM":"11311",
-                "GAZEBO_RESOURCE_PATH":"/home/agnel/Projects/TrajectoryFollowing/catkin_ws/src/robot_scenario/launch:/home/agnel/Projects/TrajectoryFollowing/catkin_ws/src/robot_scenario/worlds/office/media",
+                "GAZEBO_RESOURCE_PATH":"/home/agnel/Projects/TrajectoryFollowing/catkin_ws/src/robot_scenario/worlds/office/media:/home/agnel/Projects/TrajectoryFollowing/catkin_ws/src/robot_scenario/launch",
                 "GAZEBO_MODEL_PATH":"/home/agnel/Projects/TrajectoryFollowing/catkin_ws/src/robot_scenario/worlds/office/models:/home/agnel/Projects/TrajectoryFollowing/catkin_ws/src/robot_scenario/worlds/office/media"
             }
         }
