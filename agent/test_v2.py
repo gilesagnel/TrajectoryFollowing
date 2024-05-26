@@ -1,4 +1,4 @@
-from train_v2 import Agent, create_state, get_action
+from train_v2 import Agent, create_state
 import torch as T
 from velodyne_env import GazeboEnv
 
@@ -13,7 +13,7 @@ def test_agent(agent, env, num_episodes, max_steps_per_episode):
             with T.no_grad():
                 i_state, e_state = create_state(state)
                 q_values = agent(i_state, e_state)
-                action = get_action(q_values)
+                action = env.get_action(q_values)
 
             next_state, reward, done, _ = env.step(action)
             episode_reward += reward

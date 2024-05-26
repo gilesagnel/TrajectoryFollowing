@@ -7,11 +7,9 @@ from os import path
 
 import numpy as np
 import rospy
-import sensor_msgs.point_cloud2 as pc2
 from gazebo_msgs.msg import ModelState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import PointCloud2
 from squaternion import Quaternion
 from std_srvs.srv import Empty
 from visualization_msgs.msg import Marker
@@ -19,68 +17,27 @@ from visualization_msgs.msg import MarkerArray
 import tf.transformations as tft
 from geometry_msgs.msg import Point
 from squaternion import Quaternion
-import cv2
 
-import path_generator_v1 as pg
+from path_generator import PathGenerator
 
-GOAL_REACHED_DIST = 0.3
-COLLISION_DIST = 0.35
+
 TIME_DELTA = 0.1
-
-def check_pos(x, y):
-    goal_ok = True
-
-    if -3.8 > x > -6.2 and 6.2 > y > 3.8:
-        goal_ok = False
-
-    if -1.3 > x > -2.7 and 4.7 > y > -0.2:
-        goal_ok = False
-
-    if -0.3 > x > -4.2 and 2.7 > y > 1.3:
-        goal_ok = False
-
-    if -0.8 > x > -4.2 and -2.3 > y > -4.2:
-        goal_ok = False
-
-    if -1.3 > x > -3.7 and -0.8 > y > -2.7:
-        goal_ok = False
-
-    if 4.2 > x > 0.8 and -1.8 > y > -3.2:
-        goal_ok = False
-
-    if 4 > x > 2.5 and 0.7 > y > -3.2:
-        goal_ok = False
-
-    if 6.2 > x > 3.8 and -3.3 > y > -4.2:
-        goal_ok = False
-
-    if 4.2 > x > 1.3 and 3.7 > y > 1.5:
-        goal_ok = False
-
-    if -3.0 > x > -7.2 and 0.5 > y > -1.5:
-        goal_ok = False
-
-    if x > 4.5 or x < -4.5 or y > 4.5 or y < -4.5:
-        goal_ok = False
-
-    return goal_ok
 
 
 class GazeboEnv:
     """Superclass for all Gazebo environments."""
 
-    def __init__(self, launchfile, environment_dim):
-        self.environment_dim = environment_dim
+    def __init__(self, launchfile, action_space):
         self.odom_x = 0
         self.odom_y = 0
 
-        self.start = [0.0,0.0]
+        self.start = [0.0, 0.0]
         self.end = [0.0, 0.0]
         self.floorplan = None
 
         self.goal_trajectory = [(0.0, 0.0)]
+        self.action_space = action_space
 
-        self.trajectory_feature = None
         self.trajectory_thickness = 0.1
         self.last_odom = None
         self.goal_point_radius = 0.05
@@ -135,7 +92,6 @@ class GazeboEnv:
     def odom_callback(self, od_data):
         self.last_odom = od_data
 
-    # Perform an action and read a new state
     def step(self, action):
         target = False
 
@@ -196,7 +152,6 @@ class GazeboEnv:
         return state, reward, done, target
 
     def reset(self, episode):
-        # Resets the state of the environment and returns an initial observation.
         rospy.wait_for_service("/gazebo/reset_world")
         try:
             self.reset_proxy()
@@ -205,9 +160,11 @@ class GazeboEnv:
             print("/gazebo/reset_simulation service call failed")
 
         
-        max_distance = round(3.0 + 1.0 * 1.1 **(episode // 30), 2)  
-        self.start, self.end = pg.generate_start_end_point(max_distance)
-        self.goal_trajectory = pg.generate_path(self.start, self.end)
+        # max_dist = 4.0 + 0.01 * episode 
+        pg = PathGenerator(4.0, 6.0, [-25, 25], [0, 22], 2)
+        self.goal_trajectory = pg.generate_path()
+        self.start = pg.start_point
+        self.end = pg.end_point
         angle = pg.get_orientation(self.goal_trajectory[0], self.goal_trajectory[1])
         
         quaternion = Quaternion.from_euler(0.0, 0.0, angle)
@@ -257,18 +214,12 @@ class GazeboEnv:
         return state
 
     def sample_action(self):
-        return [random.choice([-0.5, 0, 0.5]), random.choice([-1., 0., 1.])]
-
-    @staticmethod
-    def generate_start_end_point(min_distance = 14.0, x_limit=(-24.5,24.5), y_limit=(0.5, 21.5)):
-        start = [round(random.uniform(i[0], i[1]), 2) for i in (x_limit, y_limit)]
-        distance = 0.0
-        end = start[:]
-        while distance < min_distance:
-            end = [round(random.uniform(-25, 25), 2), round(random.uniform(0.0, 22), 2)]
-            distance = math.sqrt((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2)
-        return start, end
+        return [random.choice(self.action_space[0]), random.choice(self.action_space[1])]
     
+    def get_action(self, values):
+        scores = values.squeeze(0).reshape(-1, 2, 5).max(dim=-1)[1].squeeze(0)
+        return [self.action_space[0][scores[0]], self.action_space[1][scores[1]]]
+
     def publish_markers(self, action):
         # Publish visual data in Rviz
         markerArray = MarkerArray()
@@ -304,44 +255,6 @@ class GazeboEnv:
 
         markerArray2.markers.append(marker2)
         self.publisher3.publish(markerArray2)
-
-    
-    def get_trajectory_feature(self, image_path):
-        if self.trajectory_feature is None:
-            output = np.zeros(self.environment_dim)
-    
-            image = cv2.imread(image_path)
-            hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-
-            lower_red = np.array([0, 50, 50])  
-            upper_red = np.array([10, 255, 255])
-
-            mask = cv2.inRange(hsv_image, lower_red, upper_red)
-
-            kernel = np.ones((5,5), np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            skeleton = cv2.ximgproc.thinning(mask.astype(np.uint8), thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
-
-            # Find contours 
-            contours, _ = cv2.findContours(skeleton, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            # Extract the coordinates of the largest contour 
-            trajectory_contour = max(contours, key=cv2.contourArea)
-            trajectory_data = np.squeeze(trajectory_contour)  # Remove extra dimensions
-
-            min_values = np.min(trajectory_data, axis=0)
-            trajectory_data = trajectory_data - min_values    
-            
-            trajectory_data = trajectory_data.flatten()
-            
-            output[:len(trajectory_data)] = trajectory_data
-
-            self.trajectory_feature = output
-        
-        out = self.trajectory_feature - self.trajectory_feature.mean()
-
-        return out
-
     
     def draw_trajectory(self):
         marker_array = MarkerArray()
@@ -368,7 +281,6 @@ class GazeboEnv:
 
         self.publisher.publish(marker_array)
 
-    
     def is_out_of_trajectory(self):
         x, y = self.odom_x, self.odom_y
         gt = self.goal_trajectory
@@ -382,72 +294,28 @@ class GazeboEnv:
                 return False, False
         # print("Robot is out of trajectory. X:", x, "Y:", y )  
         return True, True
-    
-    
+
     def goal_reached(self):
         x, y = self.odom_x, self.odom_y
         end_x, end_y = self.goal_trajectory[-1]
         distance = math.sqrt((end_x - x)**2 + (end_y - y)**2)
         return distance < self.goal_point_radius
 
-    
-    @staticmethod
-    def observe_collision(laser_data):
-        # Detect a collision from laser data
-        min_laser = min(laser_data)
-        if min_laser < COLLISION_DIST:
-            return True, True, min_laser
-        return False, False, min_laser
-
-    
     def get_reward(self, target, is_oof_traj, angle):
         if target:
             return 100.0
         elif is_oof_traj:
             return -100.0
         else:
-            distance = pg.get_distance([self.odom_x, self.odom_y], self.goal_trajectory[-1])
-            max_distance = pg.get_distance(self.goal_trajectory[0], self.goal_trajectory[-1])
+            distance = self.get_distance([self.odom_x, self.odom_y], self.goal_trajectory[-1])
+            max_distance = self.get_distance(self.goal_trajectory[0], self.goal_trajectory[-1])
             normalized_distance = 1 - (distance / max_distance)
             scaled_distance = normalized_distance * 5.0
             return scaled_distance
-
-
-    def calculate_distance_reward(self):
-        min_distance = float('inf')
-        x, y, traj = self.odom_x, self.odom_y, self.goal_trajectory
-
-        for i in range(len(traj) - 1):
-            x1, y1 = traj[i]
-            x2, y2 = traj[i + 1]
-
-            dist = self.point_to_line_distance(x, y, x1, y1, x2, y2)
-
-            min_distance = min(min_distance, dist)
-
-        distance_reward = min_distance
-
-        return distance_reward
-
-    
-    def calculate_angle_reward(self, robot_angle):
-        min_angle_diff = float('inf')
-        traj =  self.goal_trajectory
-
-        for i in range(len(traj) - 1):
-            x1, y1 = traj[i]
-            x2, y2 = traj[i + 1]
-            angle_diff = abs(self.angle_difference(robot_angle, math.atan2(y2 - y1, x2 - x1)))
-            min_angle_diff = min(min_angle_diff, angle_diff)
-        angle_reward = min_angle_diff
-
-        return angle_reward
-    
-    
+        
     @staticmethod
-    def angle_difference(angle1, angle2):
-        return abs((angle1 - angle2 + math.pi) % (2 * math.pi) - math.pi)
-    
+    def get_distance(p1, p2):
+        return math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
     
     @staticmethod
     def point_to_line_distance(x, y, x1, y1, x2, y2):

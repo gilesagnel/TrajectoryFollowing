@@ -3,95 +3,110 @@ import random
 import numpy as np
 import cv2
 
-def method1(path, max_distance, min_distance):
-    dim = random.randint(0, 1)
-    new_point = path[-1][:]
-    new_point[dim] += random.uniform(min_distance, min(min_distance, max_distance))
-    new_point = [round(x, 2) for x in new_point]
-    path.append(new_point)
-    return path
+class PathGenerator():
+    def __init__(self, min_dist, max_dist, x_limit, y_limit, n_step):
+        self.min_dist = min_dist
+        self.max_dist = max_dist
+        self.x_limit = x_limit
+        self.y_limit = y_limit
+        self.min_step = min_dist / n_step
+        self.max_step = max_dist / n_step
+        self.start_point = [round(random.uniform(x_limit[0], x_limit[1]), 2), round(random.uniform(y_limit[0], y_limit[1]), 2)]
+        self.end_point = self.choose_point_with_radius(self.start_point)
+        self.image_size = (224, 224)
+        
 
-def limit_point(point, x_range, y_range):
-    limited_x = max(x_range[0], min(point[0], x_range[1]))
-    limited_y = max(y_range[0], min(point[1], y_range[1]))
+    def choose_point_with_radius(self, p1):
+        angle = random.uniform(0, 2 * math.pi)
+
+        radius = random.uniform(self.min_dist, self.max_dist)
+
+        x = p1[0] + radius * math.cos(angle)
+        y = p1[1] + radius * math.sin(angle)
+
+        x = max(min(x, self.x_limit[1]), self.x_limit[0])
+        y = max(min(y, self.y_limit[1]), self.y_limit[0])
+
+        return [x, y]
     
-    return [limited_x, limited_y]
+    def generate_path(self):
+        path = [self.start_point]
+        current_point = self.start_point[:]
 
-def generate_path(max_distance, min_distance, steps=1):
-    limits = [(-25, 25), (0, 22)]  
-    path = [[round(random.uniform(p[0], p[1]), 2) for p in limits]]
-    distance = 0
-    j = steps
-    while distance < max_distance or j > 0:
-        method1(path, int(max_distance/steps), min_distance)
-        path[-1] = limit_point(path[-1], limits[0], limits[1])
-        if min_distance > get_distance(path[-1], path[-2]):
-            path.pop()
-            continue
-        distance = get_distance(path[0], path[-1])
-        j -= 1
-    remove_redundant_point(path)
-    return path
+        while True:
+            distance_to_end = self.get_distance(current_point, self.end_point)
 
+            if distance_to_end <= self.max_step:
+                path.append(self.end_point)
+                break
 
-def remove_redundant_point(path):
-    i = 0
-    while i < len(path) - 2:
-        if path[i][0] == path[i + 1][0] and path[i][0] == path[i + 2][0]:  
-            del path[i + 1]
-        elif path[i][1] == path[i + 1][1] and path[i][1] == path[i + 2][1]:  
-            del path[i + 1]
-        else:
-            i += 1
+            step_size = random.uniform(self.min_step, self.max_step)
 
-def get_distance(p1, p2):
-    return math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+            angle = random.uniform(0, 2 * math.pi)
 
-def get_orientation(start, end):
-    x_dist = abs(end[0] - start[0])
-    y_dist = abs(end[1] - start[1])
-    if x_dist > y_dist:
-        if end[0] > start[0]:
-            return 0.0
-        else:
-            return 3.12
-    else:
-        if end[1] > start[1]:
-            return 1.57
-        else:
-            return -1.57
+            step_x = step_size * math.cos(angle)
+            step_y = step_size * math.sin(angle)
 
-def generate_floor_plan(path, image_size=(224, 224)):
-    image = np.zeros((image_size))
-    points = np.array(path[:])
-    points[:, 0] += 25
-    points[:, 0] *= 4.48
-    points[:, 1] *= 10.18 
-    points = points.clip(0, [image_size[0]-1, image_size[1]-1]).astype(int)
-    floor_path = []
+            new_point = (current_point[0] + step_x, current_point[1] + step_y)
 
-    s = points[0]
-    rect_top_left = s - 1  
-    rect_bottom_right = s + 1  
-    rect_points = np.array([[rect_top_left[0], rect_top_left[1]],
-                            [rect_top_left[0], rect_bottom_right[1]],
-                            [rect_bottom_right[0], rect_bottom_right[1]],
-                            [rect_bottom_right[0], rect_top_left[1]],
-                            [rect_top_left[0], rect_top_left[1]]])
-    rect_points = rect_points.clip(0, [image_size[0]-1, image_size[1]-1]).astype(int)
-    floor_path.extend(rect_points)
+            new_dist = self.get_distance(new_point, self.end_point)
 
-    for i in range(len(points) - 1):
-        p1, p2 = points[i:i+2]
-        num_points = max(abs(p1[0] - p2[0]), abs(p2[1] - p1[1])) + 1
-        pp = np.linspace(p1, p2, num_points)
-        pp = np.round(pp).astype(int)
-        floor_path.extend(pp)
+            if new_dist > distance_to_end:
+                continue
+
+            path.append(new_point)
+            current_point = new_point
+
+        path = [[round(x, 2), round(y, 2)] for x, y in path]
+
+        return path
     
-    floor_path = np.array(floor_path, dtype=int)
-    image[floor_path[:, 0], floor_path[:,1]] = 1
+    @staticmethod
+    def get_orientation(p1, p2):
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        return round(math.atan2(dy, dx), 2)
+            
+    @staticmethod
+    def get_distance(p1, p2):
+        return math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
 
-    return np.expand_dims(image, axis=0)
+    def generate_floor_plan(self, path):
+        image = np.zeros((self.image_size))
+        points = np.array(path[:], dtype=float)
+        if self.x_limit[0] < 0:
+            points[:, 0] += abs(self.x_limit[0])
+
+        if self.y_limit[0] < 0:
+            points[:, 1] += abs(self.y_limit[0])
+
+        points[:, 0] *= round(self.image_size[0] / abs(self.x_limit[1] - self.x_limit[0]), 2)
+        points[:, 1] *= round(self.image_size[1] / abs(self.y_limit[1] - self.y_limit[0]), 2)
+        points = points.clip(0, [self.image_size[0]-1, self.image_size[1]-1]).astype(int)
+        floor_path = []
+
+        s = points[0]
+        rect_top_left = s - 1  
+        rect_bottom_right = s + 1  
+        rect_points = np.array([[rect_top_left[0], rect_top_left[1]],
+                                [rect_top_left[0], rect_bottom_right[1]],
+                                [rect_bottom_right[0], rect_bottom_right[1]],
+                                [rect_bottom_right[0], rect_top_left[1]],
+                                [rect_top_left[0], rect_top_left[1]]])
+        rect_points = rect_points.clip(0, [self.image_size[0]-1, self.image_size[1]-1]).astype(int)
+        floor_path.extend(rect_points)
+
+        for i in range(len(points) - 1):
+            p1, p2 = points[i:i+2]
+            num_points = max(abs(p1[0] - p2[0]), abs(p2[1] - p1[1])) + 1
+            pp = np.linspace(p1, p2, num_points)
+            pp = np.round(pp).astype(int)
+            floor_path.extend(pp)
+        
+        floor_path = np.array(floor_path, dtype=int)
+        image[floor_path[:, 0], floor_path[:,1]] = 1
+
+        return np.expand_dims(image, axis=0)
 
 def display_image(image):
     if image is None:
@@ -105,6 +120,7 @@ def display_image(image):
 
 
 if __name__ == "__main__":
-    goal_trajectory = generate_path(4.0, 2.0, 1)
-    image = generate_floor_plan(goal_trajectory)
+    pg = PathGenerator(8.0, 10.0, [-25, 25], [0, 22], 3)
+    goal_trajectory = pg.generate_path()
+    image = pg.generate_floor_plan(goal_trajectory)
     display_image(image[:] * 255)

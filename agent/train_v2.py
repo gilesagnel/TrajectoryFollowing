@@ -77,10 +77,6 @@ def create_state(state):
     env_state = T.tensor(state[1], dtype=T.float).to(device)
     return image_state, env_state
 
-def get_action(q_values):
-    scores = q_values.squeeze(0).reshape(-1, 2, 5).max(dim=-1)[1].squeeze(0)
-    return [linear_actions[scores[0]], angular_actions[scores[1]]]
-
 def diagnose_network(net, name='network'):
     mean = 0.0
     count = 0
@@ -165,19 +161,21 @@ batch_size = 16
 
 memory = ReplayBuffer(batch_size+1, state_dim, image_size)
 
-env = GazeboEnv("multi_robot_scenario.launch", 0)
+linear_actions = [0, 0.3, 0.5, 0.8, 1]
+angular_actions = [-1, -0.5,  0, 0.5, 1]
+
+env = GazeboEnv("multi_robot_scenario.launch", action_space=[linear_actions, angular_actions])
 
 optimizer = T.optim.Adam(agent.parameters(), lr=0.001)
 
-linear_actions = [0, 0.3, 0.5, 0.8, 1]
-angular_actions = [-1, -0.5,  0, 0.5, 1]
+
 
 # # hyperparameters
 num_episodes = 1000
 max_steps_per_episode = 500
-exploration_prob = [.8, .4] 
+exploration_prob = [-1, -1] 
 min_exploration_prob = 0.001
-exploration_decay = [0.95, 0.995] 
+exploration_decay = [0.995, 0.995] 
 discount_factor = 0.99
 
 print_freq = 100
@@ -194,12 +192,14 @@ for episode in range(num_episodes):
         with T.no_grad():
             i_state, e_state = create_state(state)
             q_values = agent(i_state.unsqueeze(0), e_state.unsqueeze(0))
-            action = get_action(q_values)
+            action = env.get_action(q_values)
             
             if np.random.rand() < exploration_prob[0]:
                 action[0] = env.sample_action()[0]
-            if np.random.rand() < exploration_prob[1]:
+                exploration_prob[0] = max(min_exploration_prob, exploration_prob[0] * exploration_decay[0])
+            if np.random.rand() < exploration_prob[1] and step > 70:
                 action[1] = env.sample_action()[1]
+                exploration_prob[1] = max(min_exploration_prob, exploration_prob[1] * exploration_decay[1])
 
         next_state, reward, done, _ = env.step(action)
 
@@ -213,9 +213,6 @@ for episode in range(num_episodes):
         writer.add_scalar('Exploration Prob/Angular', exploration_prob[1], step * (1 + episode))
         if done:
             break
-
-    exploration_prob[0] = max(min_exploration_prob, exploration_prob[0] * exploration_decay[0])
-    exploration_prob[1] = max(min_exploration_prob, exploration_prob[1] * exploration_decay[1])
 
     if (episode + 1) % 100 == 0:
         print(f"Episode {episode + 1}: Reward = {episode_reward}")
