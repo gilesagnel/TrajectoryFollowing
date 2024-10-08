@@ -4,3 +4,4 @@ catkin_ws/devel/**
 results/**
 runs/**
 **.pth
+**/__pycache__/**

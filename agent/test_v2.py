@@ -1,4 +1,4 @@
-from train_v2 import Agent, create_state
+from models.agent import Agent, create_state
 import torch as T
 from velodyne_env import GazeboEnv
 
@@ -30,7 +30,7 @@ def test_agent(agent, env, num_episodes, max_steps_per_episode):
 
 
 device = T.device("cuda")
-checkpoint_path = 'model1000.pth'
+checkpoint_path = 'pytorch_models/model1000.pth'
 agent = Agent(image_size=(1, 224, 224), state_dim=5)  
 agent.load_state_dict(T.load(checkpoint_path))
 env = GazeboEnv("multi_robot_scenario.launch", 0)

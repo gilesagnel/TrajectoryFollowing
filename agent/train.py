@@ -110,7 +110,6 @@ class BaseModel(nn.Module):
         return out
         
 
-
 # TD3 network
 class TD3(object):
     def __init__(self, state_dim, action_dim, max_action):
@@ -249,7 +248,7 @@ class TD3(object):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # cuda or cpu
 seed = 0  # Random seed number
 eval_freq = 5e2 #5e3  # After how many steps to perform the evaluation
-max_ep = 50 #500  # maximum number of steps per episode
+max_ep = 1000 #500  # maximum number of steps per episode
 eval_ep = 1 #10  # number of episodes for evaluation
 max_timesteps = 5e6  # Maximum number of steps to perform
 expl_noise = 1  # Initial exploration noise starting value in range [expl_min ... 1]

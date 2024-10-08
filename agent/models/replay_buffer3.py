@@ -1,13 +1,9 @@
-import torch as T  
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 import numpy as np
 
 
 class ReplayBuffer():
 
-    def __init__(self, max_size, env_dims=2, image_shape=(1, 224, 224)):
+    def __init__(self, max_size, env_dims=2, image_shape=(3, 224, 224)):
         self.mem_size = max_size
         self.mem_cntr = 0
         self.image_state_memory = np.zeros((self.mem_size, *image_shape))
@@ -36,3 +32,11 @@ class ReplayBuffer():
         dones = self.terminal_memory[batch]    
 
         return states, rewards, states_, dones
+    
+    def empty(self):
+        self.image_state_memory = np.zeros_like(self.image_state_memory)
+        self.env_state_memory = np.zeros_like(self.env_state_memory)        
+        self.new_image_state_memory = np.zeros_like(self.new_image_state_memory)
+        self.new_env_state_memory = np.zeros_like(self.new_env_state_memory)    
+        self.reward_memory = np.zeros(self.mem_size)
+        self.terminal_memory = np.zeros(self.mem_size, dtype=bool) 

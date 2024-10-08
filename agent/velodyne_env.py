@@ -18,7 +18,7 @@ import tf.transformations as tft
 from geometry_msgs.msg import Point
 from squaternion import Quaternion
 
-from path_generator import PathGenerator
+from utils.path_generator import PathGenerator, add_point_to_floor_plan
 
 
 TIME_DELTA = 0.1
@@ -27,18 +27,22 @@ TIME_DELTA = 0.1
 class GazeboEnv:
     """Superclass for all Gazebo environments."""
 
-    def __init__(self, launchfile, action_space):
+    def __init__(self, launchfile):
+        linear_actions = [0, 0.3, 0.5, 0.8, 1]
+        angular_actions = [-0.5, -0.2,  0, 0.2, 0.5]
+        self.action_space = [linear_actions, angular_actions]
+
         self.odom_x = 0
         self.odom_y = 0
 
         self.start = [0.0, 0.0]
         self.end = [0.0, 0.0]
         self.floorplan = None
+        self.old_distance = float('inf')
 
         self.goal_trajectory = [(0.0, 0.0)]
-        self.action_space = action_space
 
-        self.trajectory_thickness = 0.1
+        self.trajectory_thickness = 0.3
         self.last_odom = None
         self.goal_point_radius = 0.05
 
@@ -88,9 +92,11 @@ class GazeboEnv:
         self.odom = rospy.Subscriber(
             "/r1/odom", Odometry, self.odom_callback, queue_size=1
         )
+        self.odoms = []
 
     def odom_callback(self, od_data):
         self.last_odom = od_data
+        self.odoms.append(od_data)
 
     def step(self, action):
         target = False
@@ -119,10 +125,8 @@ class GazeboEnv:
         except (rospy.ServiceException) as e:
             print("/gazebo/pause_physics service call failed")
 
-        # trajectory data
-        i_state = self.floorplan[:]
-
         # Calculate robot heading from odometry data
+        self.odoms = []
         self.odom_x = self.last_odom.pose.pose.position.x
         self.odom_y = self.last_odom.pose.pose.position.y
         quaternion = Quaternion(
@@ -140,18 +144,17 @@ class GazeboEnv:
         if self.goal_reached():
             target = True
             done = True
+        selected_points = self.select_points()
+        if selected_points.__len__() < 4:
+            selected_points = [(self.odom_x, self.odom_y, angle)] * 4
+        state = [add_point_to_floor_plan(self.floorplan, [pt[0], pt[1]], pt[2]) for pt in selected_points]
+        state = np.concatenate(state, axis=0)
 
-        goal_x = self.odom_x - self.goal_trajectory[-1][0]
-        goal_y = self.odom_y - self.goal_trajectory[-1][1]
-        robot_state = np.array([self.odom_x, self.odom_y, angle, goal_x, goal_y])
-        robot_state = (robot_state - robot_state.mean()) / robot_state.std()
-        state = [i_state, robot_state]
         reward = self.get_reward(target, is_oof_traj, angle)
-        # if target or done:
-            # print("reward ", reward, ",done ", done, ", target ", target)
+
         return state, reward, done, target
 
-    def reset(self, episode):
+    def reset(self):
         rospy.wait_for_service("/gazebo/reset_world")
         try:
             self.reset_proxy()
@@ -160,11 +163,11 @@ class GazeboEnv:
             print("/gazebo/reset_simulation service call failed")
 
         
-        # max_dist = 4.0 + 0.01 * episode 
-        pg = PathGenerator(4.0, 6.0, [-25, 25], [0, 22], 2)
+        pg = PathGenerator(12.0, 14.0, [-25, 25], [0, 22], 8)
         self.goal_trajectory = pg.generate_path()
         self.start = pg.start_point
         self.end = pg.end_point
+        self.old_distance = round(self.get_distance(self.start, self.end), 4)
         angle = pg.get_orientation(self.goal_trajectory[0], self.goal_trajectory[1])
         
         quaternion = Quaternion.from_euler(0.0, 0.0, angle)
@@ -180,6 +183,7 @@ class GazeboEnv:
 
         self.odom_x = object_state.pose.position.x
         self.odom_y = object_state.pose.position.y
+        self.odoms = []
         
         self.publish_markers([0.0, 0.0])
         self.draw_trajectory()
@@ -197,24 +201,33 @@ class GazeboEnv:
             self.pause()
         except (rospy.ServiceException) as e:
             print("/gazebo/pause_physics service call failed")
-        
-        quaternion = Quaternion(
-            object_state.pose.orientation.w,
-            object_state.pose.orientation.x,
-            object_state.pose.orientation.y,
-            object_state.pose.orientation.z,
-        )
-        euler = quaternion.to_euler(degrees=False)
-        angle = round(euler[2], 4)
-        robot_state = [self.odom_x, self.odom_y, angle] + [0.0] * 2
 
         self.floorplan = pg.generate_floor_plan(self.goal_trajectory)
+        state = add_point_to_floor_plan(self.floorplan, [self.odom_x, self.odom_y], angle)
         
-        state = [self.floorplan[:], robot_state]
-        return state
+        return np.concatenate([state] * 4, axis=0)
+    
+    def select_points(self):
+        if self.odoms.__len__() < 1:
+            return []
+        selected_odoms = [self.odoms[0], self.odoms[1], self.odoms[3], self.odoms[-1]]
+        selected_points = []
+        for o in selected_odoms:
+            x, y = o.pose.pose.position.x, o.pose.pose.position.y
+            quaternion = Quaternion(
+                o.pose.pose.orientation.w,
+                o.pose.pose.orientation.x,
+                o.pose.pose.orientation.y,
+                o.pose.pose.orientation.z,
+            )
+            euler = quaternion.to_euler(degrees=False)
+            angle = round(euler[2], 4)
+            selected_points.append((x, y, angle))
+        return selected_points
+        
 
     def sample_action(self):
-        return [random.choice(self.action_space[0]), random.choice(self.action_space[1])]
+        return [int(random.choice(self.action_space[0])), int(random.choice(self.action_space[0]))]
     
     def get_action(self, values):
         scores = values.squeeze(0).reshape(-1, 2, 5).max(dim=-1)[1].squeeze(0)
@@ -288,12 +301,12 @@ class GazeboEnv:
             x2, y2 = gt[i]
             x3, y3 = gt[i + 1]
 
-            dist = round(self.point_to_line_distance(x, y, x2, y2, x3, y3), 1)
+            dist = round(self.point_to_line_distance(x, y, x2, y2, x3, y3), 4)
 
-            if dist <= self.trajectory_thickness:
+            if dist < self.trajectory_thickness:
                 return False, False
         # print("Robot is out of trajectory. X:", x, "Y:", y )  
-        return True, True
+        return False, True
 
     def goal_reached(self):
         x, y = self.odom_x, self.odom_y
@@ -302,16 +315,18 @@ class GazeboEnv:
         return distance < self.goal_point_radius
 
     def get_reward(self, target, is_oof_traj, angle):
+        reward = 0
         if target:
             return 100.0
         elif is_oof_traj:
-            return -100.0
-        else:
-            distance = self.get_distance([self.odom_x, self.odom_y], self.goal_trajectory[-1])
-            max_distance = self.get_distance(self.goal_trajectory[0], self.goal_trajectory[-1])
-            normalized_distance = 1 - (distance / max_distance)
-            scaled_distance = normalized_distance * 5.0
-            return scaled_distance
+            reward -= 1
+        
+        distance = round(self.get_distance([self.odom_x, self.odom_y], self.goal_trajectory[-1]), 4)
+        if self.old_distance > distance and (self.old_distance - distance) > 0.5:
+            self.old_distance = distance
+            reward += 1
+        return reward
+
         
     @staticmethod
     def get_distance(p1, p2):
